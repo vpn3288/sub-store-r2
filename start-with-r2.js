@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Sub-Store 启动脚本（R2 存储版本 - 调试版）
+ * Sub-Store 启动脚本（R2 存储版本 - 支持同步方法）
  */
 
 console.log('='.repeat(60));
@@ -71,12 +71,13 @@ Module.prototype.require = function(id) {
     return new Proxy(originalFs, {
       get(target, prop) {
         const asyncMethods = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'stat'];
+        const syncMethods = ['readFileSync', 'writeFileSync', 'unlinkSync', 'readdirSync', 'mkdirSync', 'statSync', 'existsSync'];
         
+        // 拦截异步方法
         if (asyncMethods.includes(prop) && typeof r2Adapter[prop] === 'function') {
           return function(...args) {
             const filePath = args[0];
             
-            // 只拦截数据目录
             if (typeof filePath === 'string' && filePath.startsWith(r2Config.basePath)) {
               interceptCount++;
               console.log(`[R2] 拦截 ${prop}(${filePath}) [#${interceptCount}]`);
@@ -92,9 +93,52 @@ Module.prototype.require = function(id) {
                 });
             }
             
-            // 其他路径使用原生 fs
             return target[prop].apply(target, args);
           };
+        }
+        
+        // 拦截同步方法 - 转换为同步调用
+        if (syncMethods.includes(prop)) {
+          const asyncMethod = prop.replace('Sync', '');
+          
+          if (typeof r2Adapter[asyncMethod] === 'function') {
+            return function(...args) {
+              const filePath = args[0];
+              
+              if (typeof filePath === 'string' && filePath.startsWith(r2Config.basePath)) {
+                interceptCount++;
+                console.log(`[R2] 拦截同步方法 ${prop}(${filePath}) [#${interceptCount}]`);
+                
+                // 使用 deasync 将异步转同步
+                const deasync = require('deasync');
+                let result;
+                let error;
+                let done = false;
+                
+                r2Adapter[asyncMethod].apply(r2Adapter, args)
+                  .then(res => {
+                    result = res;
+                    done = true;
+                    console.log(`[R2] ✅ ${prop} 成功`);
+                  })
+                  .catch(err => {
+                    error = err;
+                    done = true;
+                    console.error(`[R2] ❌ ${prop} 失败:`, err.message);
+                  });
+                
+                // 等待异步完成
+                while (!done) {
+                  deasync.sleep(10);
+                }
+                
+                if (error) throw error;
+                return result;
+              }
+              
+              return target[prop].apply(target, args);
+            };
+          }
         }
         
         return target[prop];
@@ -105,7 +149,7 @@ Module.prototype.require = function(id) {
   return originalRequire.apply(this, arguments);
 };
 
-console.log('[DEBUG] ✅ fs 拦截器已注入');
+console.log('[DEBUG] ✅ fs 拦截器已注入（支持同步方法）');
 
 // 5. 启动 Sub-Store
 console.log('\n[DEBUG] 启动 Sub-Store...');
