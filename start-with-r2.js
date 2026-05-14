@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 
 /**
- * Sub-Store 启动脚本（R2 存储版本）
- * 在启动前注入 R2 文件系统适配器
+ * Sub-Store 启动脚本（R2 存储版本 - 调试版）
  */
 
-const Module = require('module');
-const R2FileSystemAdapter = require('./r2-fs-adapter');
+console.log('='.repeat(60));
+console.log('[DEBUG] Sub-Store R2 启动脚本开始执行');
+console.log('='.repeat(60));
 
-console.log('[Sub-Store-R2] 正在初始化 R2 文件系统适配器...');
+// 1. 打印所有环境变量
+console.log('\n[DEBUG] 检查环境变量:');
+console.log('  R2_ENDPOINT:', process.env.R2_ENDPOINT ? '✅ 已设置' : '❌ 未设置');
+console.log('  R2_ACCESS_KEY_ID:', process.env.R2_ACCESS_KEY_ID ? '✅ 已设置' : '❌ 未设置');
+console.log('  R2_SECRET_ACCESS_KEY:', process.env.R2_SECRET_ACCESS_KEY ? '✅ 已设置' : '❌ 未设置');
+console.log('  R2_BUCKET_NAME:', process.env.R2_BUCKET_NAME || '❌ 未设置');
+console.log('  SUB_STORE_DATA_BASE_PATH:', process.env.SUB_STORE_DATA_BASE_PATH || '/data');
 
-// R2 配置
+// 2. 验证配置
 const r2Config = {
   endpoint: process.env.R2_ENDPOINT,
   accessKeyId: process.env.R2_ACCESS_KEY_ID,
@@ -19,36 +25,71 @@ const r2Config = {
   basePath: process.env.SUB_STORE_DATA_BASE_PATH || '/data',
 };
 
-// 验证配置
 if (!r2Config.endpoint || !r2Config.accessKeyId || !r2Config.secretAccessKey) {
-  console.error('[Sub-Store-R2] 错误: R2 配置不完整');
-  console.error('需要设置环境变量: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY');
+  console.error('\n[ERROR] R2 配置不完整！');
+  console.error('缺少的环境变量:');
+  if (!r2Config.endpoint) console.error('  - R2_ENDPOINT');
+  if (!r2Config.accessKeyId) console.error('  - R2_ACCESS_KEY_ID');
+  if (!r2Config.secretAccessKey) console.error('  - R2_SECRET_ACCESS_KEY');
+  console.error('\n请在 Render Dashboard 设置这些环境变量');
   process.exit(1);
 }
 
-// 创建 R2 适配器实例
-const r2Adapter = new R2FileSystemAdapter(r2Config);
+console.log('\n[DEBUG] R2 配置验证通过');
+console.log('  Endpoint:', r2Config.endpoint);
+console.log('  Bucket:', r2Config.bucketName);
+console.log('  BasePath:', r2Config.basePath);
 
-// 拦截 fs 模块 - 只拦截数据目录的操作
+// 3. 加载 R2 适配器
+console.log('\n[DEBUG] 加载 R2 文件系统适配器...');
+
+const Module = require('module');
+const R2FileSystemAdapter = require('./r2-fs-adapter');
+
+// 创建 R2 适配器实例
+let r2Adapter;
+try {
+  r2Adapter = new R2FileSystemAdapter(r2Config);
+  console.log('[DEBUG] ✅ R2 适配器创建成功');
+} catch (error) {
+  console.error('[ERROR] R2 适配器创建失败:', error.message);
+  process.exit(1);
+}
+
+// 4. 拦截 fs 模块
+console.log('[DEBUG] 注入 fs 模块拦截器...');
+
 const originalRequire = Module.prototype.require;
+let interceptCount = 0;
+
 Module.prototype.require = function(id) {
   if (id === 'fs' || id === 'node:fs') {
     const originalFs = originalRequire.apply(this, arguments);
     
-    // 创建代理对象
+    console.log('[DEBUG] ✅ fs 模块被拦截');
+    
     return new Proxy(originalFs, {
       get(target, prop) {
-        // 只拦截异步方法，同步方法使用原生 fs
-        const asyncMethods = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'stat', 'exists'];
+        const asyncMethods = ['readFile', 'writeFile', 'unlink', 'readdir', 'mkdir', 'stat'];
         
         if (asyncMethods.includes(prop) && typeof r2Adapter[prop] === 'function') {
-          // 返回包装函数，检查路径是否在数据目录
           return function(...args) {
             const filePath = args[0];
             
-            // 只有数据目录的操作才使用 R2
+            // 只拦截数据目录
             if (typeof filePath === 'string' && filePath.startsWith(r2Config.basePath)) {
-              return r2Adapter[prop].apply(r2Adapter, args);
+              interceptCount++;
+              console.log(`[R2] 拦截 ${prop}(${filePath}) [#${interceptCount}]`);
+              
+              return r2Adapter[prop].apply(r2Adapter, args)
+                .then(result => {
+                  console.log(`[R2] ✅ ${prop} 成功`);
+                  return result;
+                })
+                .catch(error => {
+                  console.error(`[R2] ❌ ${prop} 失败:`, error.message);
+                  throw error;
+                });
             }
             
             // 其他路径使用原生 fs
@@ -56,7 +97,6 @@ Module.prototype.require = function(id) {
           };
         }
         
-        // 其他方法使用原生 fs
         return target[prop];
       }
     });
@@ -65,12 +105,15 @@ Module.prototype.require = function(id) {
   return originalRequire.apply(this, arguments);
 };
 
-console.log('[Sub-Store-R2] R2 文件系统适配器已注入');
-console.log(`[Sub-Store-R2] Bucket: ${r2Config.bucketName}`);
-console.log(`[Sub-Store-R2] BasePath: ${r2Config.basePath}`);
-console.log('[Sub-Store-R2] 只有数据目录操作会使用 R2 存储');
-console.log('[Sub-Store-R2] 前端文件仍使用本地文件系统');
+console.log('[DEBUG] ✅ fs 拦截器已注入');
 
-// 启动 Sub-Store（包括前端和后端）
-console.log('[Sub-Store-R2] 启动 Sub-Store...');
-require('/opt/app/sub-store.bundle.js');
+// 5. 启动 Sub-Store
+console.log('\n[DEBUG] 启动 Sub-Store...');
+console.log('='.repeat(60));
+
+try {
+  require('/opt/app/sub-store.bundle.js');
+} catch (error) {
+  console.error('[ERROR] Sub-Store 启动失败:', error);
+  process.exit(1);
+}
