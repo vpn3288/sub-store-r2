@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: sub-store-r2
+    env: docker
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUB_STORE_BACKEND_API_PORT
+        value: 10000
+      - key: SUB_STORE_BACKEND_API_HOST
+        value: '::'
+      - key: SUB_STORE_DATA_BASE_PATH
+        value: /data
+      - key: SUB_STORE_BACKEND_MERGE
+        value: 'true'
+      - key: SUB_STORE_FRONTEND_BACKEND_PATH
+        sync: false
+      - key: SUB_STORE_FRONTEND_PATH
+        value: /opt/app/frontend
+      - key: R2_ENDPOINT
+        value: https://2a4788af44158fa7645bfeb1c60e467e.r2.cloudflarestorage.com
+      - key: R2_ACCESS_KEY_ID
+        value: d302276c54935d43e49f418ebb6de0fc
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: sub-store-data
